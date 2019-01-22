@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
+import cv2
 
 from util.metrics import jaccard, accuracy_metrics
 
@@ -16,11 +17,12 @@ SUPERVISED_TRAINING = 1
 # original 2D CNN model
 class CNN(nn.Module):
 
-    def __init__(self, in_channels=1, out_channels=2, pretrain_unsupervised=False):
+    def __init__(self, in_channels=1, out_channels=2, pretrain_unsupervised=False, cam_maps=256):
         super(CNN, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.cam_maps = cam_maps
         self.pretrain_unsupervised = pretrain_unsupervised
         self.phase = SUPERVISED_TRAINING
 
@@ -42,7 +44,6 @@ class CNN(nn.Module):
         # conv4
         self.conv4 = nn.Conv2d(48, 48, 4, padding=2)
         self.relu4 = nn.ReLU(inplace=True)
-        self.pool4 = nn.MaxPool2d(2, stride=2, ceil_mode=True) # // 16
 
         if pretrain_unsupervised:
             self.phase = UNSUPERVISED_TRAINING
@@ -66,12 +67,11 @@ class CNN(nn.Module):
             self.upsample8 = nn.Upsample(size=(94,94), mode='bilinear')
             self.conv8 = nn.Conv2d(48, self.in_channels, 4, padding=2)
 
-        # fc5
-        self.fc5 = nn.Linear(6*6*48, 200)
-        self.relu5 = nn.ReLU(inplace=True)
+        # activation maps
+        self.activations = nn.Conv2d(48, cam_maps, 3, padding=1)
 
-        # fc6
-        self.fc6 = nn.Linear(200, out_channels)
+        # classification layer
+        self.out = nn.Linear(cam_maps, out_channels)
 
     def forward(self, x):
 
@@ -87,7 +87,6 @@ class CNN(nn.Module):
         h = self.pool3(h)
 
         h = self.relu4(self.conv4(h))[:,:,:-1,:-1]
-        h = self.pool4(h)
 
         if self.phase == UNSUPERVISED_TRAINING:
 
@@ -105,13 +104,42 @@ class CNN(nn.Module):
 
         else:
 
-            h = h.view(h.size(0),-1)
+            # CAM activations
+            h = self.activations(h)
 
-            h = self.relu5(self.fc5(h))
+            # global average pooling
+            h = F.avg_pool2d(h, (h.size()[2], h.size()[3])).view(-1, self.cam_maps)
 
-            h = self.fc6(h)
+            # class output
+            h = self.out(h)
 
         return h
+
+    def get_cam(self, x):
+
+        # compute base network features
+        h = x
+        h = self.relu1(self.conv1(h))[:,:,:-1,:-1]
+        h = self.pool1(h)
+        h = self.relu2(self.conv2(h))
+        h = self.pool2(h)
+        h = self.relu3(self.conv3(h))[:,:,:-1,:-1]
+        h = self.pool3(h)
+        h = self.relu4(self.conv4(h))[:,:,:-1,:-1]
+
+        # produce cam units
+        cam_units = self.activations(h)
+
+        bs, nc, h, w = cam_units.shape
+        output_cam = []
+        for idx in range(self.out_channels):
+            cam = self.out.weight[idx:idx+1].data.cpu().numpy().dot(cam_units.reshape((nc, h * w)).data.cpu().numpy())
+            cam = cam.reshape(h, w)
+            cam = cam - np.min(cam)
+            cam_img = cam / np.max(cam)
+            output_cam.append(cv2.resize(cam_img, (x.size(2), x.size(3))))
+
+        return output_cam
 
     # trains the network for one epoch
     def train_epoch(self, loader, loss_fn, optimizer, epoch, print_stats=1, writer=None):
@@ -237,6 +265,10 @@ class CNN(nn.Module):
 
             # always log scalars
             if self.phase == SUPERVISED_TRAINING:
+                cams = self.get_cam(x[0:1,...])[1]
+                x = vutils.make_grid(x[0:1,...], normalize=True, scale_each=True)
+                writer.add_image('test/x', x, epoch)
+                writer.add_image('test/x-cam', torch.Tensor(cams[np.newaxis, ...]), epoch)
                 writer.add_scalar('test/loss-seg', loss_avg, epoch)
                 writer.add_scalar('test/jaccard', j_avg, epoch)
                 writer.add_scalar('test/accuracy', a_avg, epoch)

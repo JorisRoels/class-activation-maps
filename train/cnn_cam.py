@@ -16,7 +16,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from data.datasets import *
-from networks.cnn import CNN
+from networks.cnn_cam import CNN
 from util.io import imwrite3D
 from util.preprocessing import get_augmenters_2d
 from util.validation import segment_pixels
@@ -39,6 +39,7 @@ parser.add_argument("--print_stats", help="Number of iterations between each tim
 parser.add_argument("--input_size", help="Size of the blocks that propagate through the network", type=str, default="95,95")
 parser.add_argument("--augment_noise", help="Use noise augmentation", type=int, default=1)
 parser.add_argument("--class_weight", help="Percentage of the reference class", type=float, default=(0.5))
+parser.add_argument("--cam_maps", help="Number of activation maps", type=int, default=256)
 
 # optimization parameters
 parser.add_argument("--pretrain_unsupervised", help="Flag whether to pre-train unsupervised", type=int, default=0)
@@ -47,8 +48,8 @@ parser.add_argument("--step_size", help="Number of epochs after which the learni
 parser.add_argument("--gamma", help="Learning rate decay factor", type=float, default=0.9)
 parser.add_argument("--epochs", help="Total number of epochs to train", type=int, default=400)
 parser.add_argument("--test_freq", help="Number of epochs between each test stage", type=int, default=1)
-parser.add_argument("--train_batch_size", help="Batch size in the training stage", type=int, default=256)
-parser.add_argument("--test_batch_size", help="Batch size in the testing stage", type=int, default=128)
+parser.add_argument("--train_batch_size", help="Batch size in the training stage", type=int, default=32)
+parser.add_argument("--test_batch_size", help="Batch size in the testing stage", type=int, default=32)
 
 args = parser.parse_args()
 args.input_size = [int(item) for item in args.input_size.split(',')]

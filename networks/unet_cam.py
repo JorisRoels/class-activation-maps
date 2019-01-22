@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.utils as vutils
 from tensorboardX import SummaryWriter
+import cv2
 
 from networks.blocks import UNetConvBlock2D, UNetUpSamplingBlock2D, UNetConvBlock3D, UNetUpSamplingBlock3D
 from util.metrics import jaccard, accuracy_metrics
@@ -104,11 +105,12 @@ class UNetEncoder3D(nn.Module):
 # original 2D unet decoder
 class UNetDecoder2D(nn.Module):
 
-    def __init__(self, in_channels=1, out_channels=2, feature_maps=64, levels=4, skip_connections=True, group_norm=True, pretrain_unsupervised=False):
+    def __init__(self, in_channels=1, out_channels=2, feature_maps=64, levels=4, skip_connections=True, group_norm=True, pretrain_unsupervised=False, cam_maps=256):
         super(UNetDecoder2D, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.cam_maps = cam_maps
         self.feature_maps = feature_maps
         self.levels = levels
         self.skip_connections = skip_connections
@@ -131,8 +133,11 @@ class UNetDecoder2D(nn.Module):
                 conv_block = UNetConvBlock2D(2**(levels-i-1) * feature_maps, 2**(levels-i-1) * feature_maps, group_norm=group_norm)
             self.features.add_module('convblock%d' % (i + 1), conv_block)
 
-        # output layer
-        self.output = nn.Conv2d(feature_maps, out_channels, kernel_size=1)
+        # activation maps
+        self.activations = nn.Conv2d(feature_maps, cam_maps, 3, padding=1)
+
+        # classification layer
+        self.out = nn.Linear(cam_maps, out_channels)
 
     def forward(self, inputs, encoder_outputs):
 
@@ -152,7 +157,14 @@ class UNetDecoder2D(nn.Module):
             outputs = getattr(self.features, 'convblock%d' % (i + 1))(outputs)
             decoder_outputs.append(outputs)
 
-        outputs = self.output(outputs)
+        # CAM activations
+        h = self.activations(outputs)
+
+        # global average pooling
+        h = F.avg_pool2d(h, (h.size()[2], h.size()[3])).view(-1, self.cam_maps)
+
+        # class output
+        outputs = self.out(h)
 
         if self.phase == SUPERVISED_TRAINING:
             return decoder_outputs, outputs
@@ -220,18 +232,19 @@ class UNetDecoder3D(nn.Module):
 # original 2D unet model
 class UNet2D(nn.Module):
 
-    def __init__(self, in_channels=1, out_channels=2, feature_maps=64, levels=4, group_norm=True, pretrain_unsupervised=False):
+    def __init__(self, in_channels=1, out_channels=2, feature_maps=64, levels=4, group_norm=True, pretrain_unsupervised=False, cam_maps=256):
         super(UNet2D, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.cam_maps = cam_maps
         self.feature_maps = feature_maps
         self.levels = levels
 
         # contractive path
         self.encoder = UNetEncoder2D(in_channels, feature_maps=feature_maps, levels=levels, group_norm=group_norm)
         # expansive path
-        self.decoder = UNetDecoder2D(in_channels, out_channels, feature_maps=feature_maps, levels=levels, skip_connections=True, group_norm=group_norm, pretrain_unsupervised=pretrain_unsupervised)
+        self.decoder = UNetDecoder2D(in_channels, out_channels, feature_maps=feature_maps, levels=levels, skip_connections=True, group_norm=group_norm, pretrain_unsupervised=pretrain_unsupervised, cam_maps=cam_maps)
 
     def forward(self, inputs):
 
@@ -242,6 +255,39 @@ class UNet2D(nn.Module):
         decoder_outputs, outputs = self.decoder(final_output, encoder_outputs)
 
         return outputs
+
+    def get_cam(self, x):
+
+        # contractive path
+        encoder_outputs, final_output = self.encoder(x)
+
+        # expansive path
+        inputs = final_output
+        encoder_outputs.reverse()
+        outputs = inputs
+        for i in range(self.levels):
+            if self.decoder.skip_connections:
+                if self.decoder.phase == SUPERVISED_TRAINING:
+                    outputs = getattr(self.decoder.features, 'upconv%d' % (i + 1))(encoder_outputs[i], outputs)  # also deals with concat
+                else:
+                    outputs = getattr(self.decoder.features, 'upconv%d' % (i + 1))(torch.zeros_like(encoder_outputs[i]), outputs)  # also deals with concat
+            else:
+                outputs = getattr(self.decoder.features, 'upconv%d' % (i + 1))(outputs)  # no concat
+            outputs = getattr(self.decoder.features, 'convblock%d' % (i + 1))(outputs)
+
+        # produce cam units
+        cam_units = self.decoder.activations(outputs)
+
+        bs, nc, h, w = cam_units.shape
+        output_cam = []
+        for idx in range(self.out_channels):
+            cam = self.decoder.out.weight[idx:idx+1].data.cpu().numpy().dot(cam_units.reshape((nc, h * w)).data.cpu().numpy())
+            cam = cam.reshape(h, w)
+            cam = cam - np.min(cam)
+            cam_img = cam / np.max(cam)
+            output_cam.append(cv2.resize(cam_img, (x.size(2), x.size(3))))
+
+        return output_cam
 
     # trains the network for one epoch
     def train_epoch(self, loader, loss_fn, optimizer, epoch, print_stats=1, writer=None, write_images=False):
@@ -297,25 +343,14 @@ class UNet2D(nn.Module):
         if writer is not None:
 
             # always log scalars
-            if self.decoder.phase == SUPERVISED_TRAINING:
+            if self.phase == SUPERVISED_TRAINING:
                 writer.add_scalar('train/loss-seg', loss_avg, epoch)
             else:
                 writer.add_scalar('train/loss-rec', loss_avg, epoch)
-
-            if write_images:
-                # write images
-                if self.decoder.phase == SUPERVISED_TRAINING:
-                    x = vutils.make_grid(x, normalize=True, scale_each=True)
-                    y = vutils.make_grid(y, normalize=y.max()-y.min()>0, scale_each=True)
-                    y_pred = vutils.make_grid(F.softmax(y_pred, dim=1)[:,1:2,:,:].data, normalize=y_pred.max()-y_pred.min()>0, scale_each=True)
-                    writer.add_image('train/x', x, epoch)
-                    writer.add_image('train/y', y, epoch)
-                    writer.add_image('train/y_pred', y_pred, epoch)
-                else:
-                    x = vutils.make_grid(x, normalize=True, scale_each=True)
-                    x_rec = vutils.make_grid(torch.sigmoid(y_pred).data)
-                    writer.add_image('train/x-rec-input', x, epoch)
-                    writer.add_image('train/x-rec-output', x_rec, epoch)
+                x = vutils.make_grid(x, normalize=True, scale_each=True)
+                x_rec = vutils.make_grid(torch.sigmoid(y_pred).data)
+                writer.add_image('train/x-rec-input', x, epoch)
+                writer.add_image('train/x-rec-output', x_rec, epoch)
 
         return loss_avg
 
@@ -376,28 +411,23 @@ class UNet2D(nn.Module):
         if writer is not None:
 
             # always log scalars
-            if self.decoder.phase == SUPERVISED_TRAINING:
+            if self.phase == SUPERVISED_TRAINING:
+                cams = self.get_cam(x[0:1,...])[1]
+                x = vutils.make_grid(x[0:1,...], normalize=True, scale_each=True)
+                writer.add_image('test/x', x, epoch)
+                writer.add_image('test/x-cam', torch.Tensor(cams[np.newaxis, ...]), epoch)
                 writer.add_scalar('test/loss-seg', loss_avg, epoch)
                 writer.add_scalar('test/jaccard', j_avg, epoch)
                 writer.add_scalar('test/accuracy', a_avg, epoch)
                 writer.add_scalar('test/precision', p_avg, epoch)
                 writer.add_scalar('test/recall', r_avg, epoch)
                 writer.add_scalar('test/f-score', f_avg, epoch)
-                if write_images:
-                    # write images
-                    x = vutils.make_grid(x, normalize=True, scale_each=True)
-                    y = vutils.make_grid(y, normalize=y.max()-y.min()>0, scale_each=True)
-                    y_pred = vutils.make_grid(F.softmax(y_pred, dim=1)[:,1:2,:,:].data, normalize=y_pred.max()-y_pred.min()>0, scale_each=True)
-                    writer.add_image('test/x', x, epoch)
-                    writer.add_image('test/y', y, epoch)
-                    writer.add_image('test/y_pred', y_pred, epoch)
             else:
                 writer.add_scalar('test/loss-rec', loss_avg, epoch)
-                if write_images:
-                    x = vutils.make_grid(x, normalize=True, scale_each=True)
-                    x_rec = vutils.make_grid(torch.sigmoid(y_pred).data)
-                    writer.add_image('test/x-rec-input', x, epoch)
-                    writer.add_image('test/x-rec-output', x_rec, epoch)
+                x = vutils.make_grid(x, normalize=True, scale_each=True)
+                x_rec = vutils.make_grid(torch.sigmoid(y_pred).data)
+                writer.add_image('test/x-rec-input', x, epoch)
+                writer.add_image('test/x-rec-output', x_rec, epoch)
 
         return loss_avg
 
@@ -422,7 +452,7 @@ class UNet2D(nn.Module):
 
                 # train the model for one epoch
                 self.train_epoch(loader=train_loader_unsupervised, loss_fn=loss_fn_rec, optimizer=optimizer, epoch=epoch,
-                                 print_stats=print_stats, writer=writer, write_images=epoch % write_images_freq == 0)
+                                 print_stats=print_stats, writer=writer)
 
                 # adjust learning rate if necessary
                 if scheduler is not None:
@@ -433,7 +463,7 @@ class UNet2D(nn.Module):
 
                 # test the model for one epoch is necessary
                 if epoch % test_freq == 0:
-                    test_loss = self.test_epoch(loader=test_loader_unsupervised, loss_fn=loss_fn_rec, epoch=epoch, writer=writer, write_images=True)
+                    test_loss = self.test_epoch(loader=test_loader_unsupervised, loss_fn=loss_fn_rec, epoch=epoch, writer=writer)
 
                     # and save model if lower test loss is found
                     if test_loss < test_loss_min:
@@ -441,40 +471,40 @@ class UNet2D(nn.Module):
                         torch.save(self, os.path.join(log_dir, 'best_checkpoint_rec.pytorch'))
 
                 # save model every epoch
-                torch.save(self, os.path.join(log_dir, 'checkpoint.pytorch_rec'))
+                torch.save(self, os.path.join(log_dir, 'checkpoint_rec.pytorch'))
 
-            print('[%s] Starting supervised pre-training' % (datetime.datetime.now()))
-            self.decoder.phase = SUPERVISED_TRAINING
+        print('[%s] Starting supervised pre-training' % (datetime.datetime.now()))
+        self.phase = SUPERVISED_TRAINING
 
-            test_loss_min = np.inf
-            for epoch in range(epochs):
+        test_loss_min = np.inf
+        for epoch in range(epochs):
 
-                print('[%s] Epoch %5d/%5d' % (datetime.datetime.now(), epoch, epochs))
+            print('[%s] Epoch %5d/%5d' % (datetime.datetime.now(), epoch, epochs))
 
-                # train the model for one epoch
-                self.train_epoch(loader=train_loader, loss_fn=loss_fn_seg, optimizer=optimizer, epoch=epoch,
-                                 print_stats=print_stats, writer=writer, write_images=epoch % write_images_freq == 0)
+            # train the model for one epoch
+            self.train_epoch(loader=train_loader, loss_fn=loss_fn_seg, optimizer=optimizer, epoch=epoch,
+                             print_stats=print_stats, writer=writer)
 
-                # adjust learning rate if necessary
-                if scheduler is not None:
-                    scheduler.step(epoch=epoch)
+            # adjust learning rate if necessary
+            if scheduler is not None:
+                scheduler.step(epoch=epoch)
 
-                    # and keep track of the learning rate
-                    writer.add_scalar('learning_rate', float(scheduler.get_lr()[0]), epoch)
+                # and keep track of the learning rate
+                writer.add_scalar('learning_rate', float(scheduler.get_lr()[0]), epoch)
 
-                # test the model for one epoch is necessary
-                if epoch % test_freq == 0:
-                    test_loss = self.test_epoch(loader=test_loader, loss_fn=loss_fn_seg, epoch=epoch, writer=writer, write_images=True)
+            # test the model for one epoch is necessary
+            if epoch % test_freq == 0:
+                test_loss = self.test_epoch(loader=test_loader, loss_fn=loss_fn_seg, epoch=epoch, writer=writer)
 
-                    # and save model if lower test loss is found
-                    if test_loss < test_loss_min:
-                        test_loss_min = test_loss
-                        torch.save(self, os.path.join(log_dir, 'best_checkpoint.pytorch'))
+                # and save model if lower test loss is found
+                if test_loss < test_loss_min:
+                    test_loss_min = test_loss
+                    torch.save(self, os.path.join(log_dir, 'best_checkpoint.pytorch'))
 
-                # save model every epoch
-                torch.save(self, os.path.join(log_dir, 'checkpoint.pytorch'))
+            # save model every epoch
+            torch.save(self, os.path.join(log_dir, 'checkpoint.pytorch'))
 
-            writer.close()
+        writer.close()
 
 # original 3D unet model
 class UNet3D(nn.Module):
