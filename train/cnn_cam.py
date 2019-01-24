@@ -40,16 +40,17 @@ parser.add_argument("--input_size", help="Size of the blocks that propagate thro
 parser.add_argument("--augment_noise", help="Use noise augmentation", type=int, default=1)
 parser.add_argument("--class_weight", help="Percentage of the reference class", type=float, default=(0.5))
 parser.add_argument("--cam_maps", help="Number of activation maps", type=int, default=256)
+parser.add_argument("--n_samples", help="Number of samples for training", type=int, default=None)
 
 # optimization parameters
 parser.add_argument("--pretrain_unsupervised", help="Flag whether to pre-train unsupervised", type=int, default=0)
 parser.add_argument("--lr", help="Learning rate of the optimization", type=float, default=1e-3)
 parser.add_argument("--step_size", help="Number of epochs after which the learning rate should decay", type=int, default=10)
-parser.add_argument("--gamma", help="Learning rate decay factor", type=float, default=0.9)
-parser.add_argument("--epochs", help="Total number of epochs to train", type=int, default=400)
+parser.add_argument("--gamma", help="Learning rate decay factor", type=float, default=1)
+parser.add_argument("--epochs", help="Total number of epochs to train", type=int, default=600)
 parser.add_argument("--test_freq", help="Number of epochs between each test stage", type=int, default=1)
 parser.add_argument("--train_batch_size", help="Batch size in the training stage", type=int, default=32)
-parser.add_argument("--test_batch_size", help="Batch size in the testing stage", type=int, default=32)
+parser.add_argument("--test_batch_size", help="Batch size in the testing stage", type=int, default=16)
 
 args = parser.parse_args()
 args.input_size = [int(item) for item in args.input_size.split(',')]
@@ -77,29 +78,29 @@ input_shape = (1, args.input_size[0], args.input_size[1])
 print('[%s] Loading data' % (datetime.datetime.now()))
 train_xtransform, train_ytransform, test_xtransform, test_ytransform = get_augmenters_2d(augment_noise=(args.augment_noise==1))
 if args.data == 'epfl':
-    train = EPFLPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform)
+    train = EPFLPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
     test = EPFLPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
     if args.pretrain_unsupervised:
         train_unsupervised = EPFLTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
         test_unsupervised = EPFLTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 elif args.data == 'vnc':
-    train = VNCPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform)
+    train = VNCPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
     test = VNCPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
     if args.pretrain_unsupervised:
         train_unsupervised = VNCTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
         test_unsupervised = VNCTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 elif args.data == 'med':
-    train = MEDPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform)
+    train = MEDPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
     test = MEDPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
     if args.pretrain_unsupervised:
         train_unsupervised = MEDTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
         test_unsupervised = MEDTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 else:
     if args.data == 'embl_mito':
-        train = EMBLMitoPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform)
+        train = EMBLMitoPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
         test = EMBLMitoPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
     else:
-        train = EMBLERPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform)
+        train = EMBLERPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
         test = EMBLERPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
     if args.pretrain_unsupervised:
         train_unsupervised = EMBLTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
@@ -130,44 +131,5 @@ net.train_net(train_loader=train_loader, test_loader=test_loader,
               epochs=args.epochs, test_freq=args.test_freq, print_stats=args.print_stats,
               log_dir=args.log_dir, loss_fn_rec=loss_fn_rec,
               train_loader_unsupervised=train_loader_unsupervised, test_loader_unsupervised=test_loader_unsupervised)
-
-"""
-    Validate the trained network
-"""
-print('[%s] Validating the trained network' % (datetime.datetime.now()))
-test_data = test.data
-test_labels = test.labels
-segmentation_last_checkpoint = segment_pixels(test_data, net, args.input_size, batch_size=args.test_batch_size)
-j = jaccard(segmentation_last_checkpoint, test_labels)
-d = dice(segmentation_last_checkpoint, test_labels)
-a, p, r, f = accuracy_metrics(segmentation_last_checkpoint, test_labels)
-print('[%s] RESULTS:' % (datetime.datetime.now()))
-print('[%s]     Jaccard: %f' % (datetime.datetime.now(), j))
-print('[%s]     Dice: %f' % (datetime.datetime.now(), d))
-print('[%s]     Accuracy: %f' % (datetime.datetime.now(), a))
-print('[%s]     Precision: %f' % (datetime.datetime.now(), p))
-print('[%s]     Recall: %f' % (datetime.datetime.now(), r))
-print('[%s]     F-score: %f' % (datetime.datetime.now(), f))
-net = torch.load(os.path.join(args.log_dir, 'best_checkpoint.pytorch'))
-segmentation_best_checkpoint = segment_pixels(test_data, net, args.input_size, batch_size=args.test_batch_size)
-j = jaccard(segmentation_best_checkpoint, test_labels)
-d = dice(segmentation_best_checkpoint, test_labels)
-a, p, r, f = accuracy_metrics(segmentation_best_checkpoint, test_labels)
-print('[%s] RESULTS:' % (datetime.datetime.now()))
-print('[%s]     Jaccard: %f' % (datetime.datetime.now(), j))
-print('[%s]     Dice: %f' % (datetime.datetime.now(), d))
-print('[%s]     Accuracy: %f' % (datetime.datetime.now(), a))
-print('[%s]     Precision: %f' % (datetime.datetime.now(), p))
-print('[%s]     Recall: %f' % (datetime.datetime.now(), r))
-print('[%s]     F-score: %f' % (datetime.datetime.now(), f))
-print('[%s] Network performance (best checkpoint): Jaccard=%f - Dice=%f' % (datetime.datetime.now(), j, d))
-
-"""
-    Write out the results
-"""
-if args.write_dir is not None:
-    print('[%s] Writing the output' % (datetime.datetime.now()))
-    imwrite3D(segmentation_last_checkpoint, os.path.join(args.write_dir, 'segmentation_last_checkpoint'), rescale=True)
-    imwrite3D(segmentation_best_checkpoint, os.path.join(args.write_dir, 'segmentation_best_checkpoint'), rescale=True)
 
 print('[%s] Finished!' % (datetime.datetime.now()))

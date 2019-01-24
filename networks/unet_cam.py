@@ -256,7 +256,7 @@ class UNet2D(nn.Module):
 
         return outputs
 
-    def get_cam(self, x):
+    def get_cam(self, x, idx=1):
 
         # contractive path
         encoder_outputs, final_output = self.encoder(x)
@@ -279,15 +279,16 @@ class UNet2D(nn.Module):
         cam_units = self.decoder.activations(outputs)
 
         bs, nc, h, w = cam_units.shape
-        output_cam = []
-        for idx in range(self.out_channels):
-            cam = self.decoder.out.weight[idx:idx+1].data.cpu().numpy().dot(cam_units.reshape((nc, h * w)).data.cpu().numpy())
-            cam = cam.reshape(h, w)
-            cam = cam - np.min(cam)
-            cam_img = cam / np.max(cam)
-            output_cam.append(cv2.resize(cam_img, (x.size(2), x.size(3))))
 
-        return output_cam
+        cams = torch.zeros(bs, 1, h, w)
+        for b in range(bs):
+            cam = self.decoder.out.weight[idx:idx+1].data.cpu().numpy().dot(cam_units[b,...].reshape((nc, h * w)).data.cpu().numpy())
+            cams[b, 0, ...] = torch.Tensor(cam.reshape(h, w))
+        cams = nn.functional.interpolate(cams, (x.size(2), x.size(3)), mode="bilinear")
+        cams = cams - cams.min()
+        cams = cams / cams.max()
+
+        return cams
 
     # trains the network for one epoch
     def train_epoch(self, loader, loss_fn, optimizer, epoch, print_stats=1, writer=None, write_images=False):
@@ -412,10 +413,11 @@ class UNet2D(nn.Module):
 
             # always log scalars
             if self.phase == SUPERVISED_TRAINING:
-                cams = self.get_cam(x[0:1,...])[1]
-                x = vutils.make_grid(x[0:1,...], normalize=True, scale_each=True)
+                cams = self.get_cam(x)
+                x = vutils.make_grid(x, normalize=True, scale_each=True)
+                cams = vutils.make_grid(cams, normalize=True)
                 writer.add_image('test/x', x, epoch)
-                writer.add_image('test/x-cam', torch.Tensor(cams[np.newaxis, ...]), epoch)
+                writer.add_image('test/x-cam', cams, epoch)
                 writer.add_scalar('test/loss-seg', loss_avg, epoch)
                 writer.add_scalar('test/jaccard', j_avg, epoch)
                 writer.add_scalar('test/accuracy', a_avg, epoch)
