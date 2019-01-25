@@ -16,7 +16,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from data.datasets import *
-from networks.unet_cam import UNet2D, UNet3D
+from networks.unet import UNet2D
+from networks.cam import ModelCAM
 from util.io import imwrite3D
 from util.losses import CrossEntropyLoss, MSELoss
 from util.preprocessing import get_augmenters_2d, get_augmenters_3d
@@ -48,7 +49,6 @@ parser.add_argument("--cam_maps", help="Number of activation maps", type=int, de
 parser.add_argument("--n_samples", help="Number of samples for training", type=int, default=None)
 
 # optimization parameters
-parser.add_argument("--pretrain_unsupervised", help="Flag whether to pre-train unsupervised", type=int, default=0)
 parser.add_argument("--lr", help="Learning rate of the optimization", type=float, default=1e-3)
 parser.add_argument("--step_size", help="Number of epochs after which the learning rate should decay", type=int, default=10)
 parser.add_argument("--gamma", help="Learning rate decay factor", type=float, default=1)
@@ -78,34 +78,19 @@ if args.write_dir is not None:
 """
     Load the data
 """
-if args.method == "2D":
-    input_shape = (1, args.input_size[0], args.input_size[1])
-else:
-    input_shape = args.input_size
+input_shape = (1, args.input_size[0], args.input_size[1])
 # load data
 print('[%s] Loading data' % (datetime.datetime.now()))
-if args.method == "2D":
-    train_xtransform, train_ytransform, test_xtransform, test_ytransform = get_augmenters_2d(augment_noise=(args.augment_noise==1))
-else:
-    train_xtransform, train_ytransform, test_xtransform, test_ytransform = get_augmenters_3d(augment_noise=(args.augment_noise==1))
+train_xtransform, train_ytransform, test_xtransform, test_ytransform = get_augmenters_2d(augment_noise=(args.augment_noise==1))
 if args.data == 'epfl':
     train = EPFLPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
     test = EPFLPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
-    if args.pretrain_unsupervised:
-        train_unsupervised = EPFLTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
-        test_unsupervised = EPFLTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 elif args.data == 'vnc':
     train = VNCPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
     test = VNCPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
-    if args.pretrain_unsupervised:
-        train_unsupervised = VNCTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
-        test_unsupervised = VNCTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 elif args.data == 'med':
     train = MEDPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
     test = MEDPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
-    if args.pretrain_unsupervised:
-        train_unsupervised = MEDTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
-        test_unsupervised = MEDTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 else:
     if args.data == 'embl_mito':
         train = EMBLMitoPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
@@ -113,37 +98,26 @@ else:
     else:
         train = EMBLERPixelTrainDataset(input_shape=input_shape, transform=train_xtransform, target_transform=train_ytransform, n_samples=args.n_samples)
         test = EMBLERPixelTestDataset(input_shape=input_shape, transform=test_xtransform, target_transform=test_ytransform)
-    if args.pretrain_unsupervised:
-        train_unsupervised = EMBLTrainDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
-        test_unsupervised = EMBLTestDatasetUnsupervised(input_shape=input_shape, transform=train_xtransform)
 train_loader = DataLoader(train, batch_size=args.train_batch_size)
 test_loader = DataLoader(test, batch_size=args.test_batch_size)
-train_loader_unsupervised = None
-test_loader_unsupervised = None
-if args.pretrain_unsupervised:
-    train_loader_unsupervised = DataLoader(train_unsupervised, batch_size=args.train_batch_size)
-    test_loader_unsupervised = DataLoader(test_unsupervised, batch_size=args.test_batch_size)
 
 """
     Setup optimization for finetuning
 """
 print('[%s] Setting up optimization for finetuning' % (datetime.datetime.now()))
 # load best checkpoint
-if args.method == "2D":
-    net = UNet2D(feature_maps=args.fm, levels=args.levels, group_norm=(args.group_norm==1), pretrain_unsupervised=(args.pretrain_unsupervised==1), cam_maps=args.cam_maps)
-else:
-    net = UNet3D(feature_maps=args.fm, levels=args.levels, group_norm=(args.group_norm==1), pretrain_unsupervised=(args.pretrain_unsupervised==1))
-optimizer = optim.Adam(net.parameters(), lr=args.lr)
+net = UNet2D(feature_maps=args.fm, levels=args.levels, group_norm=(args.group_norm==1))
+cam_net = ModelCAM(net.encoder, list(net.encoder.modules())[-3].out_channels)
+optimizer = optim.Adam(cam_net.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
 
 """
     Train the network
 """
 print('[%s] Training network' % (datetime.datetime.now()))
-net.train_net(train_loader=train_loader, test_loader=test_loader,
-              loss_fn_seg=loss_fn_seg, optimizer=optimizer, scheduler=scheduler,
+cam_net.train_net(train_loader=train_loader, test_loader=test_loader,
+              loss_fn=loss_fn_seg, optimizer=optimizer, scheduler=scheduler,
               epochs=args.epochs, test_freq=args.test_freq, print_stats=args.print_stats,
-              log_dir=args.log_dir, loss_fn_rec=loss_fn_rec,
-              train_loader_unsupervised=train_loader_unsupervised, test_loader_unsupervised=test_loader_unsupervised)
+              log_dir=args.log_dir)
 
 print('[%s] Finished!' % (datetime.datetime.now()))
