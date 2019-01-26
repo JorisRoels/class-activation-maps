@@ -105,7 +105,7 @@ class UnlabeledVolumeDataset(data.Dataset):
 
 class EPFLTrainDataset(LabeledVolumeDataset):
 
-    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None):
+    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, n_samples=None):
         super(EPFLTrainDataset, self).__init__(os.path.join('../data', 'epfl', 'training.tif'),
                                                os.path.join('../data', 'epfl', 'training_groundtruth.tif'),
                                                input_shape,
@@ -113,6 +113,43 @@ class EPFLTrainDataset(LabeledVolumeDataset):
                                                preprocess=preprocess,
                                                transform=transform,
                                                target_transform=target_transform)
+        self.n_samples = n_samples
+        self.iter_in_epoch = 0
+        if n_samples is not None:
+            self.len_epoch = n_samples
+            # extract samples
+            self.samples_x = []
+            self.samples_y = []
+            for n in range(n_samples):
+                input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+                self.samples_x.append(input)
+                self.samples_y.append(target)
+
+    def __getitem__(self, i):
+
+        # get random sample
+        if self.n_samples is not None:
+            input = self.samples_x[self.iter_in_epoch]
+            target = self.samples_y[self.iter_in_epoch]
+            self.iter_in_epoch += 1
+            if self.iter_in_epoch == self.n_samples:
+                self.iter_in_epoch = 0
+                data = list(zip(self.samples_x, self.samples_y))
+                shuffle(data)
+                self.samples_x, self.samples_y = zip(*data)
+        else:
+            input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+
+        # perform augmentation if necessary
+        if self.transform is not None:
+            input = self.transform(input)
+
+        if self.target_transform is not None and len(target)>0:
+            target = self.target_transform(target)
+        if self.input_shape[0] > 1: # 3D data
+            return input[np.newaxis, ...], target[np.newaxis, ...]
+        else:
+            return input, target
 
 class EPFLTestDataset(LabeledVolumeDataset):
 
@@ -243,7 +280,7 @@ class EPFLPixelTestDataset(LabeledVolumeDataset):
 
 class EMBLMitoTrainDataset(LabeledVolumeDataset):
 
-    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5):
+    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5, n_samples=None):
         super(EMBLMitoTrainDataset, self).__init__(os.path.join('../data', 'embl', 'data.tif'),
                                                    os.path.join('../data', 'embl', 'mito_labels.tif'),
                                                    input_shape,
@@ -255,6 +292,44 @@ class EMBLMitoTrainDataset(LabeledVolumeDataset):
         s = int(split * self.data.shape[2])
         self.data = self.data[:, :, :s]
         self.labels = self.labels[:, :, :s]
+
+        self.n_samples = n_samples
+        self.iter_in_epoch = 0
+        if n_samples is not None:
+            self.len_epoch = n_samples
+            # extract samples
+            self.samples_x = []
+            self.samples_y = []
+            for n in range(n_samples):
+                input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+                self.samples_x.append(input)
+                self.samples_y.append(target)
+
+    def __getitem__(self, i):
+
+        # get random sample
+        if self.n_samples is not None:
+            input = self.samples_x[self.iter_in_epoch]
+            target = self.samples_y[self.iter_in_epoch]
+            self.iter_in_epoch += 1
+            if self.iter_in_epoch == self.n_samples:
+                self.iter_in_epoch = 0
+                data = list(zip(self.samples_x, self.samples_y))
+                shuffle(data)
+                self.samples_x, self.samples_y = zip(*data)
+        else:
+            input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+
+        # perform augmentation if necessary
+        if self.transform is not None:
+            input = self.transform(input)
+
+        if self.target_transform is not None and len(target) > 0:
+            target = self.target_transform(target)
+        if self.input_shape[0] > 1:  # 3D data
+            return input[np.newaxis, ...], target[np.newaxis, ...]
+        else:
+            return input, target
 
 class EMBLMitoTestDataset(LabeledVolumeDataset):
 
@@ -273,7 +348,7 @@ class EMBLMitoTestDataset(LabeledVolumeDataset):
 
 class EMBLERTrainDataset(LabeledVolumeDataset):
 
-    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5):
+    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5, n_samples=None):
         super(EMBLERTrainDataset, self).__init__(os.path.join('../data', 'embl', 'data.tif'),
                                                    os.path.join('../data', 'embl', 'er_labels.tif'),
                                                    input_shape,
@@ -285,6 +360,44 @@ class EMBLERTrainDataset(LabeledVolumeDataset):
         s = int(split * self.data.shape[2])
         self.data = self.data[:, :, :s]
         self.labels = self.labels[:, :, :s]
+
+        self.n_samples = n_samples
+        self.iter_in_epoch = 0
+        if n_samples is not None:
+            self.len_epoch = n_samples
+            # extract samples
+            self.samples_x = []
+            self.samples_y = []
+            for n in range(n_samples):
+                input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+                self.samples_x.append(input)
+                self.samples_y.append(target)
+
+    def __getitem__(self, i):
+
+        # get random sample
+        if self.n_samples is not None:
+            input = self.samples_x[self.iter_in_epoch]
+            target = self.samples_y[self.iter_in_epoch]
+            self.iter_in_epoch += 1
+            if self.iter_in_epoch == self.n_samples:
+                self.iter_in_epoch = 0
+                data = list(zip(self.samples_x, self.samples_y))
+                shuffle(data)
+                self.samples_x, self.samples_y = zip(*data)
+        else:
+            input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+
+        # perform augmentation if necessary
+        if self.transform is not None:
+            input = self.transform(input)
+
+        if self.target_transform is not None and len(target) > 0:
+            target = self.target_transform(target)
+        if self.input_shape[0] > 1:  # 3D data
+            return input[np.newaxis, ...], target[np.newaxis, ...]
+        else:
+            return input, target
 
 class EMBLERTestDataset(LabeledVolumeDataset):
 
@@ -543,7 +656,7 @@ class EMBLTestDatasetUnsupervised(UnlabeledVolumeDataset):
 
 class VNCTrainDataset(LabeledVolumeDataset):
 
-    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5):
+    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5, n_samples=None):
         super(VNCTrainDataset, self).__init__(os.path.join('../data', 'vnc', 'data.tif'),
                                                    os.path.join('../data', 'vnc', 'mito_labels.tif'),
                                                    input_shape,
@@ -555,6 +668,44 @@ class VNCTrainDataset(LabeledVolumeDataset):
         s = int(split * self.data.shape[2])
         self.data = self.data[:, :, :s]
         self.labels = self.labels[:, :, :s]
+
+        self.n_samples = n_samples
+        self.iter_in_epoch = 0
+        if n_samples is not None:
+            self.len_epoch = n_samples
+            # extract samples
+            self.samples_x = []
+            self.samples_y = []
+            for n in range(n_samples):
+                input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+                self.samples_x.append(input)
+                self.samples_y.append(target)
+
+    def __getitem__(self, i):
+
+        # get random sample
+        if self.n_samples is not None:
+            input = self.samples_x[self.iter_in_epoch]
+            target = self.samples_y[self.iter_in_epoch]
+            self.iter_in_epoch += 1
+            if self.iter_in_epoch == self.n_samples:
+                self.iter_in_epoch = 0
+                data = list(zip(self.samples_x, self.samples_y))
+                shuffle(data)
+                self.samples_x, self.samples_y = zip(*data)
+        else:
+            input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+
+        # perform augmentation if necessary
+        if self.transform is not None:
+            input = self.transform(input)
+
+        if self.target_transform is not None and len(target) > 0:
+            target = self.target_transform(target)
+        if self.input_shape[0] > 1:  # 3D data
+            return input[np.newaxis, ...], target[np.newaxis, ...]
+        else:
+            return input, target
 
 class VNCTestDataset(LabeledVolumeDataset):
 
@@ -705,7 +856,7 @@ class VNCTestDatasetUnsupervised(UnlabeledVolumeDataset):
 
 class MEDTrainDataset(LabeledVolumeDataset):
 
-    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5):
+    def __init__(self, input_shape, len_epoch=1000, preprocess='z', transform=None, target_transform=None, split=0.5, n_samples=None):
         super(MEDTrainDataset, self).__init__(os.path.join('../data', 'med', 'data.tif'),
                                               os.path.join('../data', 'med', 'labels.tif'),
                                               input_shape,
@@ -717,6 +868,44 @@ class MEDTrainDataset(LabeledVolumeDataset):
         s = int(split * self.data.shape[2])
         self.data = self.data[:, :, :s]
         self.labels = self.labels[:, :, :s]
+
+        self.n_samples = n_samples
+        self.iter_in_epoch = 0
+        if n_samples is not None:
+            self.len_epoch = n_samples
+            # extract samples
+            self.samples_x = []
+            self.samples_y = []
+            for n in range(n_samples):
+                input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+                self.samples_x.append(input)
+                self.samples_y.append(target)
+
+    def __getitem__(self, i):
+
+        # get random sample
+        if self.n_samples is not None:
+            input = self.samples_x[self.iter_in_epoch]
+            target = self.samples_y[self.iter_in_epoch]
+            self.iter_in_epoch += 1
+            if self.iter_in_epoch == self.n_samples:
+                self.iter_in_epoch = 0
+                data = list(zip(self.samples_x, self.samples_y))
+                shuffle(data)
+                self.samples_x, self.samples_y = zip(*data)
+        else:
+            input, target = sample_labeled_input(self.data, self.labels, self.input_shape)
+
+        # perform augmentation if necessary
+        if self.transform is not None:
+            input = self.transform(input)
+
+        if self.target_transform is not None and len(target) > 0:
+            target = self.target_transform(target)
+        if self.input_shape[0] > 1:  # 3D data
+            return input[np.newaxis, ...], target[np.newaxis, ...]
+        else:
+            return input, target
 
 class MEDTestDataset(LabeledVolumeDataset):
 
