@@ -125,10 +125,17 @@ class UNet2D(nn.Module):
     def forward(self, inputs):
 
         # contractive path
-        encoder_outputs, final_output = self.encoder(inputs)
+        encoder_outputs = []  # for decoder skip connections
+        outputs = inputs
+        for i in range(self.levels):
+            outputs = getattr(self.encoder.features,'convblock%d' % (i + 1))(outputs)
+            encoder_outputs.append(outputs)
+            outputs = getattr(self.encoder.features,'pool%d' % (i + 1))(outputs)
+        final_output = self.encoder.center_conv(outputs)
+        # encoder_outputs, final_output = self.encoder(inputs)
 
         # expansive path
-        decoder_outputs, outputs = self.decoder(final_output, encoder_outputs)
+        outputs = self.decoder(final_output, encoder_outputs)
 
         return outputs
 
