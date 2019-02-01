@@ -110,9 +110,12 @@ test_loader = DataLoader(test, batch_size=args.test_batch_size)
     Setup optimization for supervised training
 """
 print('[%s] Setting up optimization for supervised training' % (datetime.datetime.now()))
-net_cam = load_net(args.init_net)
-net = UNet2D(feature_maps=args.fm, levels=args.levels, group_norm=(args.group_norm == 1))
-net.encoder = deepcopy(net_cam.feature_model)
+if args.init_net is not None:
+    net_cam = load_net(args.init_net)
+    net = UNet2D(feature_maps=args.fm, levels=args.levels, group_norm=(args.group_norm == 1))
+    net.encoder = deepcopy(net_cam.feature_model)
+else:
+    net = UNet2D(feature_maps=args.fm, levels=args.levels, group_norm=(args.group_norm == 1))
 optimizer = optim.Adam(net.parameters(), lr=args.lr)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
 
